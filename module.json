@@ -1,0 +1,8 @@
+{
+  "name": "automatic-token-movement",
+  "title": "Automatic Token Movement",
+  "description": "A simple module created as a demo for working in the Foundry Virtual Tabletop framework.",
+  "author": "Me",
+  "version": "1.0.0",
+  "minimumCoreVersion": "0.5.0"
+}
