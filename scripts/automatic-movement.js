@@ -23,6 +23,7 @@ class tokenPath {
 		this.wallsLayerIndex = canvas.layers.findIndex(function (element) {
 			return element.constructor.name == "WallsLayer";
 		});
+		this.delay = 1000;
 	}
 	
 	setTokenId(tokenId) {
@@ -47,9 +48,9 @@ class tokenPath {
 		var destination = this.nextPoint();
 		var token = canvas.tokens.get(this.tokenId);
 		if (!canvas.layers[wallsLayerIndex].checkCollision(new Ray({x:token.x,y:token.y}, destination))) {
-			return token.update(destination);
+			token.update(destination);
 		}
-		return new Promise();
+		//return new Promise();
 	}
 	
 	startWalking() {
@@ -59,9 +60,8 @@ class tokenPath {
 	
 	walkingLoop() {
 		if (this.walking) {
-			this.moveToken().then(() => {
-				setTimeout(this.walkingLoop.bind(this), 1000);
-			});
+			this.moveToken();
+			setTimeout(this.walkingLoop.bind(this), this.delay);
 		}
 	}
 
@@ -89,11 +89,17 @@ class randomPath extends tokenPath{
 		var y = Math.floor(Math.random() * this.yRange[1] + this.yRange[0]) * this.gridsize;
 		var destination = {x:x, y:y};
 		var token = canvas.tokens.get(this.tokenId);
-		if (!canvas.layers[this.wallsLayerIndex].checkCollision(new Ray({x:token.x,y:token.y}, destination))) {
-			//return token.update(destination);
-			return token.setPosition(x, y);
+		var ray = new Ray({x:token.x,y:token.y}, destination);
+		destination.rotation = ray.angle * 180/Math.PI;
+		if (!canvas.layers[this.wallsLayerIndex].checkCollision(ray)) {
+			this.delay = 500*ray.distance/50;
+			//console.log(ray.distance);
+			//console.log(ray.angle);
+			//token._updateRotation(ray.angle);
+			token.update(destination);
+			//return token.setPosition(x, y);
 		}
-		return new Promise();
+		//return new Promise();
 	}
 }
 function sleep(ms) {
