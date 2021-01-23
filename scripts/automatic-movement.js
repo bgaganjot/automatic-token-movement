@@ -11,6 +11,12 @@ class Logger {
 	}
 }
 
+window.Handlebars.registerHelper('select', function( value,options ) {
+	var $el = $('<select />').html( options.fn(this) );
+	$el.find('[id="' + value + '"]').attr({'selected':'selected'});
+	return $el.html();
+});
+
 class pathManager {
 	constructor() {}
 	
@@ -18,11 +24,11 @@ class pathManager {
 		Returns true if all are not walking, returns false if even one is walking
 	***/
 	static startOrStop(tokens) {
-		for (var i = 0; i < tokens.length; i++) {
-			var token = tokens[i];
+		for (let i = 0; i < tokens.length; i++) {
+			let token = tokens[i];
 			if (hasProperty(token, "tp.paths")) {
-				var paths = getProperty(token, "tp.paths");
-				for (var key in paths) {
+				let paths = getProperty(token, "tp.paths");
+				for (let key in paths) {
 					if (paths[key].getWalking()) {
 						return false;
 					}
@@ -37,9 +43,9 @@ class pathManager {
 		pathType: The kind of path to start
 	***/
 	static startAll(tokens, pathType) {
-		for (var i = 0; i < tokens.length; i++) {
-			var token = tokens[i];
-			var p = null;
+		for (let i = 0; i < tokens.length; i++) {
+			let token = tokens[i];
+			let p = null;
 			if (hasProperty(token, "tp.paths." + pathType.name)) {
 				logger.log(token.id + " has " + pathType.name);
 				p = getProperty(token, "tp.paths." + pathType.name)
@@ -56,23 +62,70 @@ class pathManager {
 	}
 	
 	static stopAll(tokens) {
-		for (var i = 0; i < tokens.length; i++) {
-			var token = tokens[i];
+		for (let i = 0; i < tokens.length; i++) {
+			let token = tokens[i];
 			if (hasProperty(token, "tp.paths")) {
-				var paths = getProperty(token, "tp.paths");
-				for (var key in paths) {
+				let paths = getProperty(token, "tp.paths");
+				for (let key in paths) {
 					paths[key].stop();
 				}
 			}
 		}
+	}
+	
+	static loadTokenSettings(token) {
+		let settings = undefined;
+		try {
+			settings = JSON.parse(token.getFlag("automatic-token-movement", token.id));
+		} catch (e) {
+			//TODO: Change to logger.err
+			logger.log(e);
+		}
+		logger.log("Loading settings for " + token.id);
+		let tp = new PathController(token.id);
+		if (settings != undefined) {
+			logger.log(token.id + " settings defined");
+			tp.setCurrentPath(settings.currentPath);
+			tp.getTokenPath().setSettings(settings.tokenPath);
+			tp.getRandomPath().setSettings(settings.randomPath);
+		}
+		setProperty(token, "tp", tp);
+	}
+	
+	static saveTokenSettings(token) {
+		logger.log("Saving settings for " + token.id);
+		token.setFlag("automatic-token-movement", token.id, stringify(getProperty(token, "tp")));
+		//getProperty(token, "tp", tp);
+	}
+}
+
+class PathController {
+	constructor(tokenId) {
+		//TODO Create ENUM for each path type
+		this.currentPath = 0;
+		this.tokenPath = new tokenPath(tokenId);
+		this.randomPath = new randomPath(tokenId);
+	}
+	
+	setCurrentPath(currentPath) {
+		this.currentPath = currentPath;
+	}
+	
+	getCurrentPath() {
+		return this.currentPath;
+	}
+	getTokenPath() {
+		return this.tokenPath;
+	}
+	getRandomPath() {
+		return this.randomPath;
 	}
 }
 
 class path {
 	constructor(tokenId) {
 		this.tokenId = tokenId;
-		this.token = canvas.tokens.get(this.tokenId);
-		this.currentPoint = 0;
+		//this.token = canvas.tokens.get(this.tokenId);
 		this.walking = false;
 		this.wallsLayerIndex = canvas.layers.findIndex(function (element) {
 			return element.constructor.name == "WallsLayer";
@@ -80,6 +133,10 @@ class path {
 		this.delay = 1000;
 	}
 	
+	
+	setSettings () {		
+		//Abstract
+	}
 	
 	moveToken() {		
 		//Abstract
@@ -108,6 +165,12 @@ class path {
 	setDefaultDelay(delay) {
 		this.delay = delay;
 	}
+	
+	setSettings(settings) {
+		for (var prop in settings) {
+			this[prop] = settings[prop];
+		}	
+	}
 }
 
 class tokenPath extends path{
@@ -115,8 +178,8 @@ class tokenPath extends path{
 	constructor(...args) {
 		super(...args)
 
-		this.points = [{x:0,y:0}, {x:50,y:0}, {x:0,y:100}];
-		//this.points = [];
+		//this.points = [{x:0,y:0}, {x:50,y:0}, {x:0,y:100}];
+		this.points = [];
 		this.pointsIndex = 0;
 		this.walking = false;
 		this.wallsLayerIndex = canvas.layers.findIndex(function (element) {
@@ -139,14 +202,15 @@ class tokenPath extends path{
 	}
 	
 	moveToken() {		
-		var wallsLayerIndex = canvas.layers.findIndex(function (element) {
+		let token = canvas.tokens.get(this.tokenId);
+		let wallsLayerIndex = canvas.layers.findIndex(function (element) {
 			return element.constructor.name == "WallsLayer";
 		});
 		
-		var startingIndex = this.pointsIndex;
-		var destination = this.nextPoint();
-		if (!canvas.layers[wallsLayerIndex].checkCollision(new Ray({x:this.token.x,y:this.token.y}, destination))) {
-			this.token.update(destination);
+		let startingIndex = this.pointsIndex;
+		let destination = this.nextPoint();
+		if (!canvas.layers[wallsLayerIndex].checkCollision(new Ray({x:token.x+1,y:token.y+1}, destination))) {
+			token.update(destination);
 		}
 	}
 	
@@ -157,12 +221,40 @@ class tokenPath extends path{
 class randomPath extends path{
 	constructor(...args) {
 		super(...args);
-		this.startX = this.token.x;
-		this.startY = this.token.y;
+		let token = canvas.tokens.get(this.tokenId);
+		this.startX = token.x;
+		this.startY = token.y;
+		this.keepStartingPoint = true;
 		this.xRange = [0, 5];
 		this.yRange = [0, 5];
 		this.negative = true;
 		this.gridsize = canvas.scene.data.grid;
+	}
+	
+	moveToken() {
+		let token = canvas.tokens.get(this.tokenId);
+		if (!this.keepStartingPoint) {
+			this.startX = token.x;
+			this.startY = token.y;
+		}
+		logger.log(this.startX);
+		logger.log(this.startY);
+		logger.log(this.xRange);
+		logger.log(this.yRange);
+		let x = Math.floor(Math.random() * this.xRange[1] + this.xRange[0]) * (Math.round(Math.random()) ? 1 : -1) * this.gridsize + this.startX;
+		let y = Math.floor(Math.random() * this.yRange[1] + this.yRange[0]) * (Math.round(Math.random()) ? 1 : -1) * this.gridsize + this.startY;
+		let destination = {x:x, y:y};
+		
+		let ray = new Ray({x:token.x + 1,y:token.y + 1}, destination);
+		destination.rotation = ray.angle * -180/Math.PI;
+		if (!canvas.layers[this.wallsLayerIndex].checkCollision(ray)) {
+			this.delay = 500*ray.distance/50;
+			token.update(destination);
+		}
+	}
+	
+	getRange() {
+		return [this.xRange, this.yRange];
 	}
 	
 	setRange(x1, x2, y1, y2) {
@@ -174,29 +266,155 @@ class randomPath extends path{
 		this.gridsize = gridsize;
 	}
 	
-	moveToken() {
-		var x = Math.floor(Math.random() * this.xRange[1] + this.xRange[0]) * (Math.round(Math.random()) ? 1 : -1) * this.gridsize + this.startX;
-		var y = Math.floor(Math.random() * this.yRange[1] + this.yRange[0]) * (Math.round(Math.random()) ? 1 : -1) * this.gridsize + this.startY;
-		//logger.log(x + " " + y);
-		var destination = {x:x, y:y};
-		//logger.log("tokenid: " + this.tokenId);
-		var token = canvas.tokens.get(this.tokenId);
-		//logger.log(stringify(token));
-		var ray = new Ray({x:token.x,y:token.y}, destination);
-		destination.rotation = ray.angle * -180/Math.PI;
-		if (!canvas.layers[this.wallsLayerIndex].checkCollision(ray)) {
-			this.delay = 500*ray.distance/50;
-			//console.log(ray.distance);
-			//console.log(ray.angle);
-			//token._updateRotation(ray.angle);
-			//logger.log("before update");
-			token.update(destination);
-			//logger.log("after update");
-			//return token.setPosition(x, y);
-		}
-		//return new Promise();
+	getKeepStartingPoint() {
+		return this.keepStartingPoint;
 	}
+	
+	setKeepStartingPoint(keepStartingPoint) {
+		this.keepStartingPoint = keepStartingPoint;
+	}
+	
 }
+
+class movementMenu extends FormApplication {
+	
+	constructor(token, ...args) {
+		super(...args);
+		this.token = token;
+	}
+	
+	static get defaultOptions() {
+		return mergeObject(super.defaultOptions, {
+			template : "modules/automatic-token-movement/templates/token-config.html",
+			width : 600,
+			height : "auto",
+			classes: ["sheet", "token-sheet"],
+			title : "Movement Menu Options",
+			closeOnSubmit : true,
+			id : "movement-menu-container"
+        });
+	}
+	
+	async getData() {
+		let ranges = this.token.tp.getRandomPath().getRange();
+		var startingPoint = "filler val";
+		if (this.token.tp.getRandomPath().getKeepStartingPoint()) {
+			startingPoint = "checked";
+		}
+		return {
+				startingPoint: startingPoint,
+				tokenId: this.token.id,
+				selectedPathType: this.token.tp.getCurrentPath(),
+				minX: ranges[0][0],
+				maxX: ranges[0][1],
+				minY: ranges[1][0],
+				maxY: ranges[1][1],
+				vision: true
+				};
+	}
+	
+	activateListeners(html) {
+		const body = $("#movement-menu-container");
+		
+		const position = $("#position");
+		const positionButton = $(".positionButton");
+		const vision = $("#vision");
+		const visionButton = $(".visionButton");
+		
+		const nonePathType = $("#noneForm");
+		const assignedPathType = $("#assignedForm");
+		const randomPathType = $("#randomForm");
+		
+		position.toggleClass("hide");
+		
+		let currentBody = position;
+		let currentPathType = [nonePathType, assignedPathType, randomPathType][this.token.tp.getCurrentPath()];
+		currentPathType.toggleClass("hide");
+		super.activateListeners(html);
+		
+		
+		$(".item").click (function() {
+            currentBody.toggleClass("hide");
+            if ($(this).hasClass("positionButton")) {
+				logger.log("position");
+                currentBody = position;
+            } else if ($(this).hasClass("visionButton")) {
+				logger.log("vision");
+                currentBody = vision;
+            }
+			currentBody.toggleClass("hide");
+            body.height("auto");
+		});
+		
+		$("#pathType").change (function() {
+			logger.log("click");
+			currentPathType.toggleClass("hide");
+			logger.log(JSON.stringify($(this)));
+			let val = $(this).val()
+			if (val == "none") {
+				logger.log("assigned");
+				currentPathType = nonePathType;
+			} else if (val == "assigned") {
+				logger.log("random");
+				currentPathType = assignedPathType;
+			} else if (val == "random") {
+				currentPathType = randomPathType;
+			}
+			currentPathType.toggleClass("hide");
+			body.height("auto");
+		});
+	}
+	
+	get title() {
+		return "Automatic Movement";
+	}
+	
+	async _updateObject(event, formData) {
+		console.log("updateObject");
+		console.log(event);
+		console.log(formData);
+		let token = canvas.tokens.get(formData.tokenId);
+
+		if (formData.pathType == "none") {
+			console.log("none");
+			pathManager.stopAll([token]);
+			token.tp.setCurrentPath(0);
+		}
+		else if (formData.pathType == "assigned") {
+			console.log("assigned");
+			token.tp.setCurrentPath(1);
+			pathManager.saveTokenSettings(token);
+		}
+		else if (formData.pathType == "random") {
+			console.log("random");
+			randomPath = token.tp.getRandomPath();
+			randomPath.setKeepStartingPoint(formData.startingPoint);
+			randomPath.setDefaultDelay(formData.delay);
+			randomPath.setRange(formData.minX, 
+								formData.maxX,
+								formData.minY,
+								formData.maxY
+								);
+			
+			//randomPath.stop();
+			//setTimeout(randomPath.start.bind(this), 1000);
+
+			
+			token.tp.setCurrentPath(2);
+			pathManager.saveTokenSettings(token);
+		}
+		return;
+	}
+	
+	/*_onSourceChange(event) {
+		console.log("ONSOURCHAWSE");
+        event.preventDefault();
+        const field = event.target;
+        const form = field.form;
+        if (!form.name.value) form.name.value = field.value.split("/").pop().split(".").shift();
+    }*/
+}
+
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
@@ -219,60 +437,30 @@ stringify = (str) => {
 
 const logger = new Logger();
 
-Hooks.on("controlToken", async function (tok) {
-	logger.log(stringify(canvas))
-	/*
-	let tokenId = tok.data._id;
-	var token = canvas.tokens.get(tokenId);
-	logger.log(getProperty(token, "tp"));
-	if (!hasProperty(token, "tp")) {
-		logger.log("TP started");
-		let tp = new randomPath(tokenId);
-		tp.start();
-		setProperty(token, "tp", tp);
-	} else {
-		logger.log("TP stopped");
-		getProperty(token, "tp").stop();
-		delete token.tp;
-	}
-*/
+
+Hooks.on("controlToken", (token, html, options) => {
+	//DhH3RjzlrEauI80x
+	//setProperty(token, "data.tp", "someValasdf")
+	//console.log(JSON.stringify(new PathController(token.id)));
+	
 });
-function assignRandom (tokenId) {
-	//let tokenId = tok.data._id;
-	//logger.log(stringify(tokenId));
-		//var token = canvas.tokens.get(tokenId);
-		var token = canvas.tokens.get(tokenId);
-		logger.log(getProperty(token, "tp"));
-		//logger.log(stringify(canvas));
-		if (!hasProperty(token, "tp")) {
-			logger.log("TP started for " + tokenId);
-			let tp = new randomPath(tokenId);
-			tp.start();
-			setProperty(token, "tp", tp);
-		} else {
-			logger.log("TP stopped for " + tokenId);
-			getProperty(token, "tp").stop();
-			delete token.tp;
-		}
-};
+
+
 Hooks.on("renderTokenHUD", (tokenHUD, html, options) => {
 	logger.log("renderTokenHUD");
-	//NOT WORKING
-	//logger.log(JSON.stringify(tokenHUD));
-	//WORKING
-	//logger.log(stringify(game));
-	//logger.log(JSON.stringify(html));
-	//logger.log(JSON.stringify(options));
-	let tokenId = getProperty(tokenHUD.object, "data._id");
-	var token = canvas.tokens.get(tokenId);
-	//logger.log(stringify(token));
 	if (!game.user.isGM) return;
+
+	let tokenId = getProperty(tokenHUD.object, "data._id");
+	let token = canvas.tokens.get(tokenId);
+	
 	logger.log("not GM, token: " + tokenId);
 	let linearWalkHUD = $(`
-            <div class="control-icon" style="margin-left: 4px;"> \ 
-                <img id="linearHUD" src="modules/foundry-patrol/imgs/svg/line.svg" width="36" height="36" title="Linear Walk"> \
-            </div>
-        `);
+		<div class="control-icon" style="margin-left: 4px;"> \ 
+			<img id="linearHUD" src="modules/foundry-patrol/imgs/svg/line.svg" width="36" height="36" title="Linear Walk"> \
+		</div>
+	`);
+	const patrolMenu = $(`<i class="control-icon fas fa-caret-down" style="margin-left: 4px;" title="Patrol Menu"></i>`);
+
 	const patrolDiv = $(`
 		<div class="patrolDiv" style="display: flex;  flex-direction: row; justify-content: center; align-items:center; margin-right: 75px;">\
 		</div>
@@ -280,25 +468,91 @@ Hooks.on("renderTokenHUD", (tokenHUD, html, options) => {
 
 	html.find(".left").append(patrolDiv);
 	html.find(".patrolDiv").append(linearWalkHUD);
-	
+	html.find(".right").append(patrolMenu);
+
+	patrolMenu.click((e) => {
+		if (!hasProperty(token, "tp")) {
+			pathManager.loadTokenSettings(token);
+		}
+		new movementMenu(token).render(true);
+	});
+
 	linearWalkHUD.click((e) => {
-		let id = e.target.getAttribute("src");	
-		var tokenLayerIndex = canvas.layers.findIndex(function (element) {
+		logger.log("starting/stopping walk for " + token.id);
+		let id = e.target.getAttribute("src");
+		if (!hasProperty(token, "tp")) {
+			pathManager.loadTokenSettings(token);
+		}
+		let path = null;
+		if (token.tp.getCurrentPath() == 1) {
+			logger.log("Token Path");
+			path = token.tp.getTokenPath();
+		} else if (token.tp.getCurrentPath() == 2) {
+			logger.log("Random Path");
+			path = token.tp.getRandomPath();
+		} else {
+			logger.log("No Path");
+			return;
+		}
+		if (path.getWalking()) {
+			path.stop();
+		} else {
+			path.start();
+		}
+		return;
+		//TODO: This is the code to get all selected tokens, for mass turn on/off
+		// The code that assists this needs to be redone with the current saving
+		let tokenLayerIndex = canvas.layers.findIndex(function (element) {
 			return element.constructor.name == "TokenLayer";
 		});
-		//logger.log(tokenLayerIndex + " " + stringify(canvas.layers[tokenLayerIndex]));//._controlled));
 		logger.log(tokenId);
 		controlledTokens = canvas.layers[tokenLayerIndex].controlled.filter(token => token._controlled);
 		tokens = controlledTokens.map(element => canvas.tokens.get(element.id));
 		sos = pathManager.startOrStop(tokens)
 		logger.log("startOrStop? " + sos);
 		if (sos) {
-			//assignRandom(tokenId);
 			pathManager.startAll(tokens, randomPath);
 		} else {
 			pathManager.stopAll(tokens);
 		}
 	});
+});
+Hooks.on("createToken", () => {
+	//logger.log("something");
+});
+Hooks.on("init", async function() { 
+/*
+	logger.log("Hello World!");
+	game.settings.register("automatic-token-movement", "AutomaticMovementTemplate", {
+		name: "Settings Name",
+		hint: "Hint",
+		scope: "client",
+		config: true,
+		choices: {"/modules/automatic-token-movement/templates/token-config.html" : "Yes"},
+		default: "/modules/automatic-token-movement/templates/token-config.html",
+		type: String,
+//		onChange: (value) => {
+//		  CONFIG.bubblerolls.template = value;
+//		},
+	  });
+	CONFIG.bubblerolls.template = game.settings.get(
+		"automatic-token-movement",
+		"AutomaticMovementTemplate"
+	);
+	*/
+});
+Hooks.on("renderTokenConfig", (var1, html, options) => {
+	//logger.log("var1: " + stringify(var1));
+	//logger.log("html: " + stringify(html));
+	//logger.log("options: " + stringify(options));
+	/*html.find(".position").append($(`<div class="automatic-movement">
+		<div class="form-group">
+			<label>"TOKEN.AutoMove"</label>
+			<input type="checkbox" name="automove" data-dtype="Boolean" {{checked object.automove}}/>
+		</div>
+	</div>
+	`)); */
+	
 });
 
 console.log("automatic-movement hooked in");
