@@ -1,3 +1,10 @@
+/*var stringify2 = require('json-stringify-safe');
+var circularObj = {};
+circularObj.circularRef = circularObj;
+circularObj.list = [ circularObj, circularObj ];
+console.log(stringify2(circularObj, null, 2));
+*/
+
 class Logger {
 	
 	constructor() {
@@ -23,7 +30,7 @@ class pathManager {
 	/***
 		Returns true if all are not walking, returns false if even one is walking
 	***/
-	static startOrStop(tokens) {
+	static async startOrStop(tokens) {
 		for (let i = 0; i < tokens.length; i++) {
 			let token = tokens[i];
 			if (hasProperty(token, "tp.paths")) {
@@ -42,7 +49,7 @@ class pathManager {
 		tokens: Array of tokens to start walking
 		pathType: The kind of path to start
 	***/
-	static startAll(tokens, pathType) {
+	static async startAll(tokens, pathType) {
 		for (let i = 0; i < tokens.length; i++) {
 			let token = tokens[i];
 			let p = null;
@@ -61,7 +68,7 @@ class pathManager {
 		}
 	}
 	
-	static stopAll(tokens) {
+	static async stopAll(tokens) {
 		for (let i = 0; i < tokens.length; i++) {
 			let token = tokens[i];
 			if (hasProperty(token, "tp.paths")) {
@@ -73,7 +80,7 @@ class pathManager {
 		}
 	}
 	
-	static loadTokenSettings(token) {
+	static async loadTokenSettings(token) {
 		let settings = undefined;
 		try {
 			settings = JSON.parse(token.getFlag("automatic-token-movement", token.id));
@@ -92,8 +99,15 @@ class pathManager {
 		setProperty(token, "tp", tp);
 	}
 	
-	static saveTokenSettings(token) {
+	static async saveTokenSettings(token) {
 		logger.log("Saving settings for " + token.id);
+		//TODO: Go through all path type
+		//TODO: Implement Get settings function, so that large properties will not need to be deleted
+		//		This will fix texture bug after deleting it from object for saving
+		token.tp.getRandomPath().cleanup();
+		token.tp.getTokenPath().cleanup();
+		var prop = stringify(getProperty(token, "tp"));
+		logger.log(prop);
 		token.setFlag("automatic-token-movement", token.id, stringify(getProperty(token, "tp")));
 		//getProperty(token, "tp", tp);
 	}
@@ -120,6 +134,11 @@ class PathController {
 	getRandomPath() {
 		return this.randomPath;
 	}
+	
+	cleanup() {
+		this.tokenPath.cleanup();
+		this.randomPath.cleanup();
+	}
 }
 
 class path {
@@ -127,6 +146,7 @@ class path {
 		this.tokenId = tokenId;
 		//this.token = canvas.tokens.get(this.tokenId);
 		this.walking = false;
+		this.renderedTokenPath = null;
 		this.wallsLayerIndex = canvas.layers.findIndex(function (element) {
 			return element.constructor.name == "WallsLayer";
 		});
@@ -134,23 +154,55 @@ class path {
 	}
 	
 	
-	setSettings () {		
+	async moveToken() {
 		//Abstract
+		throw "Needs to be implemented";
 	}
 	
-	moveToken() {		
+	renderPath() {
 		//Abstract
+		throw "Needs to be implemented";
+	}
+	
+	cleanup() {
+		//Abstract
+		//Cleanup any large objects like drawings before saving, like PIXI.graphics
+		throw "Needs to be implemented";
+	}
+	
+	deletePath() {
+		if (this.renderedTokenPath == null)
+			return;
+		this.renderedTokenPath.destroy();
+		this.renderedTokenPath = null;
 	}
 
-	start() {
+	async start() {
 		this.walking = true;
-		this.walkingLoop();
+		await this.walkingLoop();
 	}
 	
-	walkingLoop() {
+	async walkingLoop() {
+		//TODO: Make sure this code is fine the way its working and not use something else like Promise.all
+		//var f = async function () {await Promise.all([console.log("Hello World"), f(), sleep(this.delay)])}
+		logger.log("Walking Loop");
 		if (this.walking) {
-			this.moveToken();
-			setTimeout(this.walkingLoop.bind(this), this.delay);
+//			await new Promise(  () => this.moveToken() ).then(
+//								() => logger.log(delay)).then(
+//								() => this.walkingLoop.bind(this));
+			await new Promise(async () =>{
+										await this.moveToken();
+										//logger.log(this.delay);
+										//sleep(this.delay);
+										await setTimeout(this.walkingLoop.bind(this), this.delay);
+										logger.log(this.delay);
+										
+										//await this.walkingLoop();//.bind(this);
+									});
+			/*await Promise.all([
+				this.moveToken()
+				sleep(this.delay)
+			]).then (() => this.walkingLoop.bind(this));*/
 		}
 	}
 
@@ -178,14 +230,22 @@ class tokenPath extends path{
 	constructor(...args) {
 		super(...args)
 
-		//this.points = [{x:0,y:0}, {x:50,y:0}, {x:0,y:100}];
+		//this.points = [{x:0,y:0}, {x:canvas.scene.data.grid,y:0}, {x:0,y:2}];
+		this.renderedTokenPath = new PIXI.Container();
 		this.points = [];
 		this.pointsIndex = 0;
 		this.walking = false;
 		this.wallsLayerIndex = canvas.layers.findIndex(function (element) {
 			return element.constructor.name == "WallsLayer";
 		});
-		this.delay = 1000;
+		this.gridsize = canvas.scene.data.grid;
+
+		//this.texture = new PIXI.RenderTexture.create({width: this.gridsize, heigh: this.gridsize});
+		let graphics = new PIXI.Graphics();
+		graphics.beginFill(0xFFFF00, 0.3);
+		graphics.drawRect(0, 0, this.gridsize, this.gridsize);
+		graphics.endFill();
+		this.texture = canvas.app.renderer.generateTexture(graphics);
 	}
 	
 	setTokenId(tokenId) {
@@ -193,29 +253,88 @@ class tokenPath extends path{
 	}
 	
 	addPoint(point) {
-		this.points.push(point);
+		let length = this.points.length;
+		if (length == 0 || !canvas.layers[this.wallsLayerIndex].checkCollision(new Ray(this.points[length-1], point))) {
+			this.points.push(point);
+		} else {
+			//TODO: Notify that the token will collide through alert/red popup
+			logger.log("Target will collide with wall and cannot walk this path");
+		}
 	}
 	
-	nextPoint() {
+	async nextPoint() {
 		this.pointsIndex = (this.pointsIndex+1)%this.points.length;
 		return this.points[this.pointsIndex];
 	}
 	
-	moveToken() {		
+	async moveToken() {	
+		logger.log("Token Path Movement");
 		let token = canvas.tokens.get(this.tokenId);
 		let wallsLayerIndex = canvas.layers.findIndex(function (element) {
 			return element.constructor.name == "WallsLayer";
 		});
 		
 		let startingIndex = this.pointsIndex;
-		let destination = this.nextPoint();
+		let destination = await this.nextPoint();
+
 		if (!canvas.layers[wallsLayerIndex].checkCollision(new Ray({x:token.x+1,y:token.y+1}, destination))) {
 			token.update(destination);
 		}
+		return 0;
 	}
 	
+	renderPath() {
+		//TODO: Draw with sprite supposed to be faster, but will need to keep track of them all and delete them in cleanup
+		//https://stackoverflow.com/questions/32078129/how-to-draw-multiple-instances-of-the-same-primitive-in-pixi-js
+		this.deletePath();
+		this.renderedTokenPath = new PIXI.Container();
+		//let r = new PIXI.Graphics;
+		//r.beginFill(0xFFFF00, 0.3);
 
+		for (let point of this.points) {
+			let r = new PIXI.Sprite(this.texture);
+			r.position.x = point['x'];
+			r.position.y = point['y'];
+			this.renderedTokenPath.addChild(r);
+			//var r = new PIXI.
+			//let point = this.points[pointIndex];
+			//console.log(point)
+			//let x1 = point['x'];// * this.gridsize;
+			//let y1 = point['y'];// * this.gridsize;
+			//console.log(x1, y1, this.gridsize, this.gridsize);
+			//r.drawRect(x1, y1, this.gridsize, this.gridsize);
+		}
+		if (this.points.length > 1) {
+			for (let i = 1; i < this.points.length; i++) 
+			{
+				//let r = new PIXI.Graphics();
+				let x1 = this.points[i-1].x + (this.gridsize / 2);
+				let y1 = this.points[i-1].y + (this.gridsize / 2)
+				let x2 = this.points[i].x + (this.gridsize / 2);
+				let y2 = this.points[i].y + (this.gridsize / 2);
+				//r.lineStyle(4, 0x000000, 1).moveTo(this.points[i-1].x + (this.gridsize / 2), this.points[i-1].y + (this.gridsize / 2)).lineTo(this.points[i].x + (this.gridsize / 2) , this.points[i].y + (this.gridsize / 2));
+				//r.endFill();
+				let r = drawArrow(x1, y1, x2, y2, this.gridsize);
+				let ray = new Ray({x:x1, y:y1}, {x:x2, y:y2});
+				this.renderedTokenPath.addChild(r);
+			}
+		}
 	
+		//r.endFill();
+		
+		
+		//this.renderedTokenPath = r;
+		canvas.app.stage.addChild(this.renderedTokenPath);
+	}
+	
+	cleanup() {
+		//Cleanup any large objects like drawings before saving, like PIXI.graphics
+		this.deletePath();
+		if (this.texture != null)
+			this.texture.destroy(false);
+		delete this.texture;
+	}
+		
 }
 
 class randomPath extends path{
@@ -227,7 +346,7 @@ class randomPath extends path{
 		this.keepStartingPoint = true;
 		this.xRange = [0, 5];
 		this.yRange = [0, 5];
-		this.negative = true;
+		this.startingPoint = "topleft";
 		this.gridsize = canvas.scene.data.grid;
 	}
 	
@@ -251,6 +370,52 @@ class randomPath extends path{
 			this.delay = 500*ray.distance/50;
 			token.update(destination);
 		}
+		return 0;
+	}
+	
+	renderPath() {
+		this.deletePath();
+		var r = new PIXI.Graphics();
+		r.beginFill(0xFFFF00, 0.3);
+
+	
+		// set the line style to have a width of 5 and set the color to red
+	//	r.lineStyle(5, 0xFF0000);
+
+		//r.lineStyle(6, 0x000000, 0.5).moveTo(token.x, token.y).lineTo(token.x + 100, token.y + 100)
+		//	.lineStyle(4, 0xFFFFFF, 0.25).moveTo(token.x, token.y).lineTo(token.x + 100, token.y + 100);
+			
+		// draw a rectangle
+		//console.log(((this.negative) ? -1 : 0) * this.xRange[1] * this.gridsize + this.startX, ((this.negative) ? 1 : 0) * this.yRange[1] * this.gridsize + this.startY,
+			//this.xRange[1] * this.gridsize + this.startX, this.yRange[1] * this.gridsize + this.startY);
+		var x1 = this.startX;
+		var y1 = this.startY;
+		var x2 = this.xRange[1] * this.gridsize;
+		var y2 = this.yRange[1] * this.gridsize;
+		
+		switch (this.startingPoint) {
+			case "topleft":
+				break;
+			case "middle":
+				x1 -= x2;
+				y1 -= y2;
+				x2 *= 2;
+				y2 *= 2;
+				break;
+			default:
+				break;
+		}
+		//r.drawRect(((this.negative) ? -1 : 0) * this.xRange[1] * this.gridsize + this.startX, this.xRange[1] * this.gridsize + this.startX,
+		//			((this.negative) ? -1 : 0) * this.yRange[1] * this.gridsize + this.startY, this.yRange[1] * this.gridsize + this.startY);
+		r.drawRect(x1, y1, x2, y2);
+		r.endFill();
+		//r.blendMode = PIXI.BLEND_MODES.NORMAL;
+
+	//	stage.addChild(graphics);
+		
+		this.renderedTokenPath = r;
+		canvas.app.stage.addChild(r);//, tex, false, transform, false);
+	
 	}
 	
 	getRange() {
@@ -274,6 +439,17 @@ class randomPath extends path{
 		this.keepStartingPoint = keepStartingPoint;
 	}
 	
+	setStartingPoint(startingPoint) {
+		this.startingPoint = startingPoint;
+	}
+	
+	getStartingPoint() {
+		return this.startingPoint;
+	}
+	
+	cleanup() {
+		this.deletePath();
+	}
 }
 
 class movementMenu extends FormApplication {
@@ -281,6 +457,37 @@ class movementMenu extends FormApplication {
 	constructor(token, ...args) {
 		super(...args);
 		this.token = token;
+		if (this.token.tp.getCurrentPath() == 1) {
+			canvas.mouseInteractionManager.target.addListener("click", this.clickHandler, this);
+			Hooks.once("closemovementMenu", this.removeClickHandler.bind(this));
+		}
+	}
+	
+	removeClickHandler(mm) {
+		canvas.mouseInteractionManager.target.removeListener("click", this.clickHandler, this);
+	}
+	
+	async clickHandler(e, f) {
+		logger.log(e.data.button);
+		if (e.data.button == 0) {
+			let gridsize = canvas.scene.data.grid;
+			let x = Math.floor(Math.floor(e.data.global.x / gridsize) + Math.ceil(canvas.scene.data.padding * canvas.scene.data.width / gridsize)) * gridsize;
+			let y = Math.floor(Math.floor(e.data.global.y / gridsize) + Math.ceil(canvas.scene.data.padding * canvas.scene.data.height / gridsize)) * gridsize;
+			let tp = this.token.tp.getTokenPath();
+			tp.addPoint({"x":x,"y":y});
+			tp.renderPath();
+//			console.log(e.data.global.x, e.data.global.y);
+//			console.log(canvas.scene.data.padding);
+//			console.log((e.data.global.y + (canvas.scene.data.padding * canvas.scene.data.height)));
+//			console.log(x, y);
+//			let r = new PIXI.Graphics();
+//			r.beginFill(0xFFFF00, 0.3);
+//			r.drawRect(x, y, gridsize, gridsize);
+//			r.endFill();
+				
+//			canvas.app.stage.addChild(r);
+		//logger.log(stringify(e.data));
+		}
 	}
 	
 	static get defaultOptions() {
@@ -305,6 +512,7 @@ class movementMenu extends FormApplication {
 				startingPoint: startingPoint,
 				tokenId: this.token.id,
 				selectedPathType: this.token.tp.getCurrentPath(),
+				selectedStartingPoint: this.token.tp.getRandomPath().getStartingPoint(),
 				minX: ranges[0][0],
 				maxX: ranges[0][1],
 				minY: ranges[1][0],
@@ -383,13 +591,13 @@ class movementMenu extends FormApplication {
 		else if (formData.pathType == "assigned") {
 			console.log("assigned");
 			token.tp.setCurrentPath(1);
-			pathManager.saveTokenSettings(token);
 		}
 		else if (formData.pathType == "random") {
 			console.log("random");
 			randomPath = token.tp.getRandomPath();
 			randomPath.setKeepStartingPoint(formData.startingPoint);
 			randomPath.setDefaultDelay(formData.delay);
+			randomPath.setStartingPoint(formData.asdf)
 			randomPath.setRange(formData.minX, 
 								formData.maxX,
 								formData.minY,
@@ -399,10 +607,10 @@ class movementMenu extends FormApplication {
 			//randomPath.stop();
 			//setTimeout(randomPath.start.bind(this), 1000);
 
-			
 			token.tp.setCurrentPath(2);
-			pathManager.saveTokenSettings(token);
+			
 		}
+		await pathManager.saveTokenSettings(token);
 		return;
 	}
 	
@@ -415,7 +623,7 @@ class movementMenu extends FormApplication {
     }*/
 }
 
-function sleep(ms) {
+async function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
@@ -438,7 +646,7 @@ stringify = (str) => {
 const logger = new Logger();
 
 
-Hooks.on("controlToken", (token, html, options) => {
+var hook = Hooks.on("controlToken", (token, html, options) => {
 	//DhH3RjzlrEauI80x
 	//setProperty(token, "data.tp", "someValasdf")
 	//console.log(JSON.stringify(new PathController(token.id)));
@@ -452,6 +660,12 @@ Hooks.on("renderTokenHUD", (tokenHUD, html, options) => {
 
 	let tokenId = getProperty(tokenHUD.object, "data._id");
 	let token = canvas.tokens.get(tokenId);
+	
+	//let ranges = token.tp.getRandomPath().getRange();
+	let controlsLayerIndex = canvas.layers.findIndex(function (element) {
+		return element.constructor.name == "ControlsLayer";
+	});
+	
 	
 	logger.log("not GM, token: " + tokenId);
 	let linearWalkHUD = $(`
@@ -474,10 +688,21 @@ Hooks.on("renderTokenHUD", (tokenHUD, html, options) => {
 		if (!hasProperty(token, "tp")) {
 			pathManager.loadTokenSettings(token);
 		}
-		new movementMenu(token).render(true);
+		if (token.tp.getCurrentPath() == 1)
+			token.tp.getTokenPath().renderPath();
+		else if (token.tp.getCurrentPath() == 2)
+			token.tp.getRandomPath().renderPath();
+		var mm = new movementMenu(token);
+		mm.render(true);
+		Hooks.once("closemovementMenu", (mm) => {
+			mm.token.tp.cleanup();
+			//mm.token.tp.getRandomPath().cleanup()
+		});
 	});
 
-	linearWalkHUD.click((e) => {
+	linearWalkHUD.click(async (e) => {
+		//console.log(stringify(e));
+		//return;
 		logger.log("starting/stopping walk for " + token.id);
 		let id = e.target.getAttribute("src");
 		if (!hasProperty(token, "tp")) {
@@ -495,9 +720,9 @@ Hooks.on("renderTokenHUD", (tokenHUD, html, options) => {
 			return;
 		}
 		if (path.getWalking()) {
-			path.stop();
+			await path.stop();
 		} else {
-			path.start();
+			await path.start();
 		}
 		return;
 		//TODO: This is the code to get all selected tokens, for mass turn on/off
@@ -517,42 +742,60 @@ Hooks.on("renderTokenHUD", (tokenHUD, html, options) => {
 		}
 	});
 });
-Hooks.on("createToken", () => {
-	//logger.log("something");
-});
-Hooks.on("init", async function() { 
+_pointerDown = function(e, f) {
+	logger.log("Mouse DOWN");
+	logger.log(e.data.button);
+	var gridsize = canvas.scene.data.grid;
+	var x = Math.floor(Math.floor(e.data.global.x / gridsize) + Math.ceil(canvas.scene.data.padding * canvas.scene.data.width / gridsize)) * gridsize;
+	var y = Math.floor(Math.floor(e.data.global.y / gridsize) + Math.ceil(canvas.scene.data.padding * canvas.scene.data.height / gridsize)) * gridsize;
+	console.log(e.data.global.x, e.data.global.y);
+	console.log(canvas.scene.data.padding);
+	console.log((e.data.global.y + (canvas.scene.data.padding * canvas.scene.data.height)));
+	console.log(x, y);
+	var r = new PIXI.Graphics();
+	r.beginFill(0xFFFF00, 0.3);
+	r.drawRect(x, y, gridsize, gridsize);
+	r.endFill();
+		
+	canvas.app.stage.addChild(r);
+	//logger.log(stringify(e.data));
+}
 /*
-	logger.log("Hello World!");
-	game.settings.register("automatic-token-movement", "AutomaticMovementTemplate", {
-		name: "Settings Name",
-		hint: "Hint",
-		scope: "client",
-		config: true,
-		choices: {"/modules/automatic-token-movement/templates/token-config.html" : "Yes"},
-		default: "/modules/automatic-token-movement/templates/token-config.html",
-		type: String,
-//		onChange: (value) => {
-//		  CONFIG.bubblerolls.template = value;
-//		},
-	  });
-	CONFIG.bubblerolls.template = game.settings.get(
-		"automatic-token-movement",
-		"AutomaticMovementTemplate"
-	);
-	*/
-});
-Hooks.on("renderTokenConfig", (var1, html, options) => {
-	//logger.log("var1: " + stringify(var1));
-	//logger.log("html: " + stringify(html));
-	//logger.log("options: " + stringify(options));
-	/*html.find(".position").append($(`<div class="automatic-movement">
-		<div class="form-group">
-			<label>"TOKEN.AutoMove"</label>
-			<input type="checkbox" name="automove" data-dtype="Boolean" {{checked object.automove}}/>
-		</div>
-	</div>
-	`)); */
+_rightPointerUp = function(e, f) {
+	if (listen == null) {
+		listen = canvas.mouseInteractionManager.target.addListener("click", _pointerDown);
+	} else {
+		canvas.mouseInteractionManager.target.removeListener("click", _pointerDown);
+		listen=null;
+		logger.log(e.data.button);
+	}
+	//logger.log(stringify(e.data));
+}
+*/
+drawArrow = function (x1, y1, x2, y2, gridsize) {
+	let r = new PIXI.Graphics();
+	let ray = new Ray({x:x2, y:y2}, {x:x1, y:y1});
+	r.lineStyle(4, 0x000000, 1).moveTo(x1, y1).lineTo(x2, y2)
+		.lineTo((Math.cos(ray.angle + Math.PI/4) * gridsize/4) + x2, (Math.sin(ray.angle + Math.PI/4) * gridsize/4) + y2)
+		.moveTo(x2, y2)
+		.lineTo((Math.cos(ray.angle - Math.PI/4) * gridsize/4) + x2, (Math.sin(ray.angle - Math.PI/4) * gridsize/4) + y2)
+	r.endFill();
+	return r;
+}
+var listen = null;
+Hooks.on("ready", (tokenHUD, html, options) => {
+	//canvas.addEventListener("pointerdown", this._pointerDown);
+	//canvas.mouseInteractionManager.target.addListener("rightup", _rightPointerUp);
+	/*var r = new PIXI.Graphics();
+	
+	r.lineStyle(1, 0x000000).moveTo(0, 0).lineTo(1000, 1000);
+	
+	r.endFill();
+
+	canvas.app.stage.addChild(r);*/
 	
 });
-
 console.log("automatic-movement hooked in");
+//CONFIG.debug.hooks = true;
+
+
