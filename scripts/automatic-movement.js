@@ -18,7 +18,7 @@ class Logger {
 	}
 }
 
-window.Handlebars.registerHelper('select', function( value,options ) {
+window.Handlebars.registerHelper('selectAutomaticMovement', function( value,options ) {
 	var $el = $('<select />').html( options.fn(this) );
 	$el.find('[id="' + value + '"]').attr({'selected':'selected'});
 	return $el.html();
@@ -74,7 +74,7 @@ class pathManager {
 		}
 	}
 	
-	static async loadTokenSettings(token) {
+	static loadTokenSettings(token) {
 		let settings = undefined;
 		try {
 			settings = JSON.parse(token.getFlag("automatic-token-movement", token.id));
@@ -93,7 +93,7 @@ class pathManager {
 		setProperty(token, "tp", tp);
 	}
 	
-	static async saveTokenSettings(token) {
+	static saveTokenSettings(token) {
 		logger.log("Saving settings for " + token.id);
 		//TODO: Go through all path type
 		//TODO: Implement Get settings function, so that large properties will not need to be deleted
@@ -113,8 +113,8 @@ class PathController {
 	constructor(tokenId) {
 		//TODO Create ENUM for each path type
 		this.currentPath = 0;
-		this.tokenPath = new tokenPath(tokenId);
-		this.randomPath = new randomPath(tokenId);
+		this.tokenPath = new TokenPath(tokenId);
+		this.randomPath = new RandomPath(tokenId);
 	}
 	
 	setCurrentPath(currentPath) {
@@ -153,12 +153,15 @@ class PathController {
 	async clickHandler(e, f) {
 		if (e.data.button == 0) {
 
+			let coordinate = e.data.getLocalPosition(canvas.app.stage);
+
 			let gridsize = canvas.scene.data.grid;
-			let x = Math.floor(Math.floor(e.data.global.x / gridsize) + Math.ceil(canvas.scene.data.padding * canvas.scene.data.width / gridsize)) * gridsize;
-			let y = Math.floor(Math.floor(e.data.global.y / gridsize) + Math.ceil(canvas.scene.data.padding * canvas.scene.data.height / gridsize)) * gridsize;
+			let x = Math.floor(coordinate.x / gridsize) * gridsize;
+			let y = Math.floor(coordinate.y / gridsize) * gridsize;
 
 			if (this.currentPath == 1) {
 				let path = this.tokenPath;
+				console.log(x, y);
 				path.addPoint({"x":x,"y":y});
 				path.renderPath();
 				if (logger.DEBUG == true) {
@@ -187,6 +190,7 @@ class path {
 			return element.constructor.name == "WallsLayer";
 		});
 		this.delay = 1000;
+		this.delayVariance = 0;
 		
 		this.gridsize = canvas.scene.data.grid;
 		
@@ -266,14 +270,25 @@ class path {
 //			await new Promise(  () => this.moveToken() ).then(
 //								() => logger.log(delay)).then(
 //								() => this.walkingLoop.bind(this));
-			await new Promise(async () =>{
-										await this.moveToken();
+			let delay = this.delay;
+			if (this.delayVariance != 0) {
+				delay = Math.floor(Math.random() * this.delay * this.delayVariance/100) * (Math.round(Math.random()) ? 1 : -1)
+			}
+			//(await this.moveToken()).then(setTimeout(this.walkingLoop.bind(this), delay));
+			//console.log("begin Move");
+			await this.moveToken();//.then(console.log("end move"));
+			//console.log("begin wait: " + delay);
+			setTimeout(this.walkingLoop.bind(this), this.delay + delay);
+			/*new Promise(async () =>{ this.moveToken();
+										//(await this.moveToken()).then( () => {
+										//	await setTimeout(this.walkingLoop.bind(this), delay);
+										//});
 										//logger.log(this.delay);
 										//sleep(this.delay);
-										await setTimeout(this.walkingLoop.bind(this), this.delay);
+										//await setTimeout(this.walkingLoop.bind(this), delay);
 										
 										//await this.walkingLoop();//.bind(this);
-									});
+									}).then(setTimeout(this.walkingLoop.bind(this), delay));*/
 			/*await Promise.all([
 				this.moveToken()
 				sleep(this.delay)
@@ -300,13 +315,13 @@ class path {
 	}
 }
 
-class tokenPath extends path{
+class TokenPath extends path{
 	
 	constructor(...args) {
 		super(...args)
 
 		//this.points = [{x:0,y:0}, {x:canvas.scene.data.grid,y:0}, {x:0,y:2}];
-		this.renderedTokenPath = new PIXI.Container();
+		//this.renderedTokenPath = new PIXI.Container();
 		this.points = [];
 		this.pointsIndex = 0;
 		this.walking = false;
@@ -343,7 +358,7 @@ class tokenPath extends path{
 	}
 	
 	async moveToken() {	
-		logger.log("Token Path Movement");
+		//logger.log("Token Path Movement");
 		let token = canvas.tokens.get(this.tokenId);
 		let wallsLayerIndex = canvas.layers.findIndex(function (element) {
 			return element.constructor.name == "WallsLayer";
@@ -353,7 +368,8 @@ class tokenPath extends path{
 		let destination = await this.nextPoint();
 
 		if (!canvas.layers[wallsLayerIndex].checkCollision(new Ray({x:token.x+1,y:token.y+1}, destination))) {
-			token.update(destination);
+			await token.setPosition(destination.x, destination.y)
+			await token.update(destination);
 		}
 		return 0;
 	}
@@ -400,25 +416,9 @@ class tokenPath extends path{
 		canvas.app.stage.addChild(this.renderedTokenPath);
 	}
 	
-	/*cleanup() {
-		//Cleanup any large objects like drawings before saving, like PIXI.graphics
-		this.deletePath();
-		if (this.texture != null)
-			this.texture.destroy(false);
-		delete this.texture;
-	}
-	
-	restore() {
-		let graphics = new PIXI.Graphics();
-		graphics.beginFill(0xFFFF00, 0.3);
-		graphics.drawRect(0, 0, this.gridsize, this.gridsize);
-		graphics.endFill();
-		this.texture = canvas.app.renderer.generateTexture(graphics);
-		this.renderedTokenPath = new PIXI.Container();
-	}*/
 }
 
-class randomPath extends path{
+class RandomPath extends path{
 	constructor(...args) {
 		super(...args);
 		//this.renderedTokenPath = new PIXI.Container();
@@ -433,7 +433,7 @@ class randomPath extends path{
 		//this.gridsize = canvas.scene.data.grid;
 	}
 	
-	moveToken() {
+	async moveToken() {
 		let token = canvas.tokens.get(this.tokenId);
 		if (!this.keepStartingPoint) {
 			this.startX = token.x;
@@ -467,8 +467,9 @@ class randomPath extends path{
 		let ray = new Ray({x:token.x + 1,y:token.y + 1}, {x:destination.x+1, y:destination.y+1});
 		destination.rotation = ray.angle * -180/Math.PI;
 		if (!canvas.layers[this.wallsLayerIndex].checkCollision(ray)) {
-			this.delay = 500*ray.distance/50;
-			token.update(destination);
+			//this.delay = 500*ray.distance/50;
+			await token.setPosition(destination.x, destination.y)
+			await token.update(destination);
 		}
 		return 0;
 	}
@@ -624,7 +625,11 @@ class movementMenu extends FormApplication {
 				maxX: ranges[0][1],
 				minY: ranges[1][0],
 				maxY: ranges[1][1],
-				vision: true
+				vision: true,
+				randomPathDelayVariance: this.token.tp.getRandomPath().delayVariance,
+				randomPathDelay: this.token.tp.getRandomPath().delay,
+				tokenPathDelayVariance: this.token.tp.getTokenPath().delayVariance,
+				tokenPathDelay: this.token.tp.getTokenPath().delay
 				};
 	}
 	
@@ -693,23 +698,28 @@ class movementMenu extends FormApplication {
 	}
 	
 	async _updateObject(event, formData) {
-		console.log("updateObject");
-		console.log(event);
-		console.log(formData);
+		//console.log("updateObject");
+		//console.log(event);
+		//console.log(formData);
 		let token = canvas.tokens.get(formData.tokenId);
 
 		if (formData.pathType == "none") {
-			console.log("none");
+			//console.log("none");
 			pathManager.stopAll([token]);
 			token.tp.setCurrentPath(0);
 		}
 		else if (formData.pathType == "assigned") {
-			console.log("assigned");
+			//console.log("assigned");
 			token.tp.setCurrentPath(1);
+			let tokenPath = token.tp.getTokenPath();
+			if (formData.tokenPathDelayVariance != null)
+				tokenPath.delayVariance = formData.tokenPathDelayVariance;
+			if (formData.tokenPathDelay != null)
+				tokenPath.delay = formData.tokenPathDelay;
 		}
 		else if (formData.pathType == "random") {
-			console.log("random");
-			randomPath = token.tp.getRandomPath();
+			//console.log("random");
+			let randomPath = token.tp.getRandomPath();
 			randomPath.setKeepStartingPoint(formData.startingPoint);
 			randomPath.setDefaultDelay(formData.delay);
 			randomPath.setStartingPoint(formData.asdf)
@@ -718,7 +728,11 @@ class movementMenu extends FormApplication {
 								formData.minY,
 								formData.maxY
 								);
-			
+			//console.log(formData.fixedDelay);
+			if (formData.randomPathDelayVariance != null)
+				randomPath.delayVariance = formData.randomPathDelayVariance;
+			if (formData.randomPathDelay != null)
+				randomPath.delay = formData.randomPathDelay;
 			//randomPath.stop();
 			//setTimeout(randomPath.start.bind(this), 1000);
 
@@ -781,8 +795,6 @@ Hooks.on("renderTokenHUD", (tokenHUD, html, options) => {
 		return element.constructor.name == "ControlsLayer";
 	});
 	
-	
-	logger.log("not GM, token: " + tokenId);
 	let linearWalkHUD = $(`
 		<div class="control-icon" style="margin-left: 4px;"> \ 
 			<img id="linearHUD" src="modules/foundry-patrol/imgs/svg/line.svg" width="36" height="36" title="Linear Walk"> \
@@ -899,6 +911,7 @@ drawArrow = function (x1, y1, x2, y2, gridsize) {
 }
 var listen = null;
 Hooks.on("ready", (tokenHUD, html, options) => {
+	if (!game.user.isGM) return;
 	window.addEventListener('keydown', e => {
 		if (e.keyCode == 80) {
 			let tokenLayerIndex = canvas.layers.findIndex(function (element) {
